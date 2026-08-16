@@ -18,13 +18,25 @@ typedef struct
     float torque_norm_d;   // 目标d轴强度，0~1
     float torque_norm_q;   // 目标q轴强度，0~1
     float max_speed;       // 串级控制时的最大速度，单位rad/s
-    float max_torque_norm; // 串级控制时的最大q轴力矩，0~1
+    float max_torque_norm; // 串级控制时的最大q轴力矩，0~1     归一化q轴电流
 } motor_control_context_t;
 
-extern motor_control_context_t motor_control_context;
+typedef struct
+{
+    float p;
+    float i;
+    float d;
+} motor_pid_param_t;
+
+extern volatile motor_control_context_t motor_control_context;
+extern motor_pid_param_t motor_pid_position;
+extern motor_pid_param_t motor_pid_speed;
+extern motor_pid_param_t motor_pid_torque_d;
+extern motor_pid_param_t motor_pid_torque_q;
 
 float cycle_diff(float diff, float cycle);
 void foc_forward(float d, float q, float rotor_rad);
+void set_pwm_duty(float d_u, float d_v, float d_w);
 
 void lib_position_control(float rad);                                                           // 位置（角度）控制
 void lib_speed_control(float speed);                                                            // 速度控制
@@ -38,3 +50,8 @@ void set_motor_pid(
     float torque_d_p, float torque_d_i, float torque_d_d,
     float torque_q_p, float torque_q_i, float torque_q_d
 		);
+
+void set_position_pid(float p, float i, float d);
+void set_speed_pid(float p, float i, float d);
+void set_torque_d_pid(float p, float i, float d);
+void set_torque_q_pid(float p, float i, float d);

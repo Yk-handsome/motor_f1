@@ -42,6 +42,10 @@ void MX_USART2_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
+void motor_uart_command_start(void);
+void motor_uart_command_process(void);
+void motor_uart_command_irq_handler(void);
+
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

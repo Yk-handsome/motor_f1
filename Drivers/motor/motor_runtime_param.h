@@ -4,8 +4,13 @@
 #define rotor_logic_angle (rotor_phy_angle * POLE_PAIRS)   // 转子逻辑角度（电角度）
 extern float motor_i_u;
 extern float motor_i_v;
-extern float motor_i_d;
-extern float motor_i_q;
+// ADC中断更新、主循环读取，volatile避免调试输出读取到缓存值
+extern volatile float motor_i_d;
+extern volatile float motor_i_q;
+
+// 电流环目标值，单位A，用于运行状态观察和VOFA波形显示
+extern volatile float motor_target_i_d;
+extern volatile float motor_target_i_q;
 
 // 单位均是弧度
 extern float motor_speed;        // 电机转速，弧度/秒

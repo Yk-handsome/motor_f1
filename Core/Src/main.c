@@ -116,12 +116,12 @@ int main(void)
   MX_ADC1_Init();
   MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
-  set_motor_pid(
-      3.5, 0, 7,
-      0.02, 0.001, 0,
-      1.2, 0.02, 0,
-      1.2, 0.02, 0);
-
+set_motor_pid(
+    0.0f, 0.0f, 0.0f, // 位置环暂时关闭
+    0.0f, 0.0f, 0.0f, // 速度环暂时关闭
+    0.2f, 0.0f, 0.0f, // d轴电流环：只有P
+    1.2f, 0.02, 0.0f  // q轴电流环：只有P
+);
   extern uint8_t mt6701_rx_data[3];
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET); // 磁编码器mt6701 SPI的片选引脚
   HAL_SPI_TransmitReceive_DMA(&hspi1, mt6701_rx_data, mt6701_rx_data, 3);
@@ -145,28 +145,66 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   // 【电流模式】 电流模式测试
-  motor_control_context.torque_norm_d = 0;
-  motor_control_context.torque_norm_q = 0.4; // 百分比强度
-  motor_control_context.type = control_type_torque;
-  HAL_Delay(1000);
+  // motor_control_context.torque_norm_d = 0;
+  // motor_control_context.torque_norm_q = 0.4; // 百分比强度
+  // motor_control_context.type = control_type_torque;
+  // HAL_Delay(1000);
 
   // 【位置（角度）模式】切换到位置模式
-  motor_control_context.position = deg2rad(90); // 上电时的角度当作0度
+  // motor_control_context.position = deg2rad(90); // 上电时的角度当作0度
   // motor_control_context.position = deg2rad(90) - encoder_init_angle; // 编码器零位当作0度
-  motor_control_context.type = control_type_position;
+  // motor_control_context.type = control_type_position;
 
   // 【速度模式】
-  // motor_control_context.speed = 30;       //每秒转30弧度
+  // motor_control_context.speed = 10;       //每秒转30弧度
+  // motor_control_context.max_torque_norm = 0.2f; // 最大Iq：0.2 × MAX_CURRENT
+  // motor_control_context.type = control_type_speed_torque;
+
+  // // 力矩电流模式
+  // motor_control_context.speed = 30;
   // motor_control_context.type = control_type_speed;
 
+  // 【位置模式】（不带速度环，相当于simeple中的angle_nocascade模式）
+  // 写入弧度制的位置
+  // motor_control_context.position = deg2rad(10.0f);
+  // motor_control_context.max_speed = 40.0f; // 最大速度40rad/s
+  // motor_control_context.max_torque_norm = 0.2f;
+  // motor_control_context.type = control_type_position_speed_torque;
+
+    // 调节PID顺序：先调节电流环
+    motor_control_context.torque_norm_d = 0.0f;
+    motor_control_context.torque_norm_q = 0.1f;
+    motor_control_context.type = control_type_torque;
+
+
   // 理论讲解以及FOC代码逐步实现讲解请前往查看：https://blog.csdn.net/qq570437459/category_12672491.html
+  uint32_t vofa_tick = HAL_GetTick();
+  uint32_t led_tick = HAL_GetTick();
+  motor_uart_command_start();
   while (1)
   {
-    printf("%.3f\n", rad2deg(motor_logic_angle));
-    HAL_Delay(100);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
-    HAL_Delay(100);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
+    uint32_t now = HAL_GetTick();
+
+    // 在主循环解析串口命令，避免在UART/ADC中断中执行字符串解析
+    motor_uart_command_process();
+
+    // VOFA+ FireWater格式，100Hz：目标Iq、实际Iq、目标Id、实际Id，单位均为A
+    if (now - vofa_tick >= 10)
+    {
+      vofa_tick = now;
+      printf("%.3f,%.3f,%.3f,%.3f\n",
+             motor_target_i_q,
+             motor_i_q,
+             motor_target_i_d,
+             motor_i_d);
+    }
+
+    // 非阻塞LED心跳，避免HAL_Delay降低VOFA数据刷新率
+    if (now - led_tick >= 100)
+    {
+      led_tick = now;
+      HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_15);
+    }
 
     /* USER CODE END WHILE */
 

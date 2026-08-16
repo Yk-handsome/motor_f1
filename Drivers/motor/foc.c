@@ -13,7 +13,11 @@ arm_pid_instance_f32 pid_position;
 arm_pid_instance_f32 pid_speed;
 arm_pid_instance_f32 pid_torque_d;
 arm_pid_instance_f32 pid_torque_q;
-motor_control_context_t motor_control_context;
+volatile motor_control_context_t motor_control_context;
+motor_pid_param_t motor_pid_position;
+motor_pid_param_t motor_pid_speed;
+motor_pid_param_t motor_pid_torque_d;
+motor_pid_param_t motor_pid_torque_q;
 
 static void svpwm(float phi, float d, float q, float *d_u, float *d_v, float *d_w)
 {
@@ -106,6 +110,9 @@ static float torque_q_loop(float q)
 
 void lib_position_control(float rad)
 {
+    // 直接位置模式不经过电流环，没有Id/Iq目标
+    motor_target_i_d = 0;
+    motor_target_i_q = 0;
     float d = 0;
     float q = position_loop(rad);
     foc_forward(d, q, rotor_logic_angle);
@@ -113,6 +120,9 @@ void lib_position_control(float rad)
 
 void lib_speed_control(float speed)
 {
+    // 直接速度模式不经过电流环，没有Id/Iq目标
+    motor_target_i_d = 0;
+    motor_target_i_q = 0;
     float d = 0;
     float q = speed_loop(speed);
     foc_forward(d, q, rotor_logic_angle);
@@ -120,6 +130,9 @@ void lib_speed_control(float speed)
 
 void lib_torque_control(float torque_norm_d, float torque_norm_q)
 {
+    // 对外显示安培值；电流PI内部仍使用-MAX_CURRENT~MAX_CURRENT的归一化值
+    motor_target_i_d = torque_norm_d * MAX_CURRENT;
+    motor_target_i_q = torque_norm_q * MAX_CURRENT;
     float d = torque_d_loop(torque_norm_d);
     float q = torque_q_loop(torque_norm_q);
     foc_forward(d, q, rotor_logic_angle);
@@ -145,25 +158,49 @@ void set_motor_pid(
     float torque_d_p, float torque_d_i, float torque_d_d,
     float torque_q_p, float torque_q_i, float torque_q_d)
 {
-    pid_position.Kp = position_p;
-    pid_position.Ki = position_i;
-    pid_position.Kd = position_d;
+    set_position_pid(position_p, position_i, position_d);
+    set_speed_pid(speed_p, speed_i, speed_d);
+    set_torque_d_pid(torque_d_p, torque_d_i, torque_d_d);
+    set_torque_q_pid(torque_q_p, torque_q_i, torque_q_d);
+}
 
-    pid_speed.Kp = speed_p;
-    pid_speed.Ki = speed_i;
-    pid_speed.Kd = speed_d;
+static void set_pid_param(arm_pid_instance_f32 *pid, motor_pid_param_t *param,
+                          float p, float i, float d)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
 
-    pid_torque_d.Kp = torque_d_p;
-    pid_torque_d.Ki = torque_d_i;
-    pid_torque_d.Kd = torque_d_d;
+    param->p = p;
+    param->i = i;
+    param->d = d;
+    pid->Kp = p;
+    pid->Ki = i;
+    pid->Kd = d;
+    // 在线修改PID时清除旧的误差和输出状态，避免切换参数后突然冲击
+    arm_pid_init_f32(pid, true);
 
-    pid_torque_q.Kp = torque_q_p;
-    pid_torque_q.Ki = torque_q_i;
-    pid_torque_q.Kd = torque_q_d;
-    arm_pid_init_f32(&pid_position, false);
-    arm_pid_init_f32(&pid_speed, false);
-    arm_pid_init_f32(&pid_torque_d, false);
-    arm_pid_init_f32(&pid_torque_q, false);
+    if (!primask)
+        __enable_irq();
+}
+
+void set_position_pid(float p, float i, float d)
+{
+    set_pid_param(&pid_position, &motor_pid_position, p, i, d);
+}
+
+void set_speed_pid(float p, float i, float d)
+{
+    set_pid_param(&pid_speed, &motor_pid_speed, p, i, d);
+}
+
+void set_torque_d_pid(float p, float i, float d)
+{
+    set_pid_param(&pid_torque_d, &motor_pid_torque_d, p, i, d);
+}
+
+void set_torque_q_pid(float p, float i, float d)
+{
+    set_pid_param(&pid_torque_q, &motor_pid_torque_q, p, i, d);
 }
 
 float cycle_diff(float diff, float cycle)
