@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f7fa">
+    <title>STM32 FOC 调参台</title>
+    <link rel="stylesheet" href="assets/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">FOC</span><span>STM32 电机调参台</span></div>
+      <div class="connection-status" id="connectionStatus" data-state="offline"><span class="status-dot"></span><span id="connectionText">未连接</span></div>
+      <button class="button button-danger" id="emergencyStop" type="button" disabled title="立即发送 mode null">停止电机</button>
+    </header>
+
+    <main class="workspace">
+      <aside class="sidebar">
+        <section class="panel">
+          <h2>连接</h2>
+          <label class="field-label" for="baudRate">波特率</label>
+          <select id="baudRate">
+            <option value="115200" selected>115200</option>
+            <option value="230400">230400</option>
+            <option value="460800">460800</option>
+          </select>
+          <button class="button button-primary button-wide" id="connectButton" type="button">选择串口并连接</button>
+        </section>
+
+        <section class="panel">
+          <h2>运行模式</h2>
+          <label class="field-label" for="mode">控制模式</label>
+          <select id="mode">
+            <option value="null">停机 / Null</option>
+            <option value="torque" selected>电流 / Torque</option>
+            <option value="speed">速度 / Speed</option>
+            <option value="speed_torque">速度 + 力矩限制</option>
+            <option value="position">位置 / Position</option>
+            <option value="position_speed_torque">位置 + 速度 + 力矩限制</option>
+          </select>
+          <button class="button button-wide" id="applyMode" type="button" disabled>应用模式</button>
+        </section>
+
+        <section class="panel">
+          <h2>安全限制</h2>
+          <label class="field-label" for="limitTorque">最大力矩归一化值</label>
+          <input id="limitTorque" type="number" min="0" max="1" step="0.01" value="0.20">
+          <label class="field-label" for="limitSpeed">最大速度 (rad/s)</label>
+          <input id="limitSpeed" type="number" min="0" step="1" value="40">
+          <button class="button button-wide" id="applyLimits" type="button" disabled>应用限制</button>
+        </section>
+
+        <section class="panel diagnostics-panel">
+          <h2>通讯诊断</h2>
+          <dl class="metrics-list">
+            <div><dt>接收行数</dt><dd id="rxLines">0</dd></div>
+            <div><dt>有效遥测</dt><dd id="telemetryLines">0</dd></div>
+            <div><dt>无效数据</dt><dd id="invalidLines">0</dd></div>
+            <div><dt>遥测频率</dt><dd id="telemetryRate">0 Hz</dd></div>
+          </dl>
+        </section>
+      </aside>
+
+      <section class="content">
+        <section class="target-grid">
+          <article class="panel control-panel">
+            <div class="panel-title-row"><h2>目标值</h2><span class="badge">MCU 侧仍会限幅</span></div>
+            <div class="form-grid">
+              <label>Iq 归一化值<input id="targetIq" type="number" min="-1" max="1" step="0.01" value="0.05"></label>
+              <label>Id 归一化值<input id="targetId" type="number" min="-1" max="1" step="0.01" value="0"></label>
+              <label>速度 (rad/s)<input id="targetSpeed" type="number" step="1" value="10"></label>
+              <label>位置 (deg)<input id="targetPosition" type="number" step="1" value="0"></label>
+            </div>
+            <div class="button-row">
+              <button class="button button-primary" id="applyTargets" type="button" disabled>应用目标</button>
+              <button class="button" id="readConfig" type="button" disabled>读取当前配置</button>
+            </div>
+          </article>
+
+          <article class="panel control-panel">
+            <div class="panel-title-row"><h2>电流状态</h2><span id="currentWarning" class="badge badge-muted">等待遥测</span></div>
+            <dl class="current-readout">
+              <div><dt>Iq 目标</dt><dd id="iqRef">-- A</dd></div>
+              <div><dt>Iq 实际</dt><dd id="iqActual">-- A</dd></div>
+              <div><dt>Id 目标</dt><dd id="idRef">-- A</dd></div>
+              <div><dt>Id 实际</dt><dd id="idActual">-- A</dd></div>
+            </dl>
+          </article>
+        </section>
+
+        <section class="panel pid-panel">
+          <div class="panel-title-row"><h2>PID 参数</h2><span class="badge badge-muted">修改后单独发送每一组</span></div>
+          <div class="pid-grid">
+            <fieldset data-pid="id"><legend>Id 电流环</legend><label>P<input value="0.2" type="number" step="0.001" data-gain="p"></label><label>I<input value="0" type="number" step="0.001" data-gain="i"></label><label>D<input value="0" type="number" step="0.001" data-gain="d"></label><button type="button" class="button pid-apply" disabled>应用 Id</button></fieldset>
+            <fieldset data-pid="iq"><legend>Iq 电流环</legend><label>P<input value="1.2" type="number" step="0.001" data-gain="p"></label><label>I<input value="0.01" type="number" step="0.001" data-gain="i"></label><label>D<input value="0" type="number" step="0.001" data-gain="d"></label><button type="button" class="button pid-apply" disabled>应用 Iq</button></fieldset>
+            <fieldset data-pid="speed"><legend>速度环</legend><label>P<input value="0" type="number" step="0.001" data-gain="p"></label><label>I<input value="0" type="number" step="0.001" data-gain="i"></label><label>D<input value="0" type="number" step="0.001" data-gain="d"></label><button type="button" class="button pid-apply" disabled>应用速度环</button></fieldset>
+            <fieldset data-pid="position"><legend>位置环</legend><label>P<input value="0" type="number" step="0.001" data-gain="p"></label><label>I<input value="0" type="number" step="0.001" data-gain="i"></label><label>D<input value="0" type="number" step="0.001" data-gain="d"></label><button type="button" class="button pid-apply" disabled>应用位置环</button></fieldset>
+          </div>
+        </section>
+
+        <section class="panel chart-panel">
+          <div class="panel-title-row">
+            <div><h2>电流环实时曲线</h2></div>
+            <div class="chart-actions"><label>窗口 <select id="sampleWindow"><option value="100">100 点</option><option value="300" selected>300 点</option><option value="600">600 点</option></select></label><button id="clearChart" type="button" class="icon-button" title="清空曲线">清空</button></div>
+          </div>
+          <div class="chart-wrap"><canvas id="telemetryChart" aria-label="电流环实时曲线"></canvas></div>
+          <div class="legend"><span class="legend-iq-ref">Iq 目标</span><span class="legend-iq">Iq 实际</span><span class="legend-id-ref">Id 目标</span><span class="legend-id">Id 实际</span></div>
+        </section>
+
+        <section class="log-grid">
+          <article class="panel console-panel event-panel">
+            <div class="panel-title-row"><h2>结构化事件</h2><span id="eventCount" class="badge badge-muted">0 条</span></div>
+            <div class="event-summary" aria-live="polite">
+              <div><span>当前状态</span><strong id="eventState">等待设备事件</strong></div>
+              <div><span>控制模式</span><strong id="eventMode">--</strong></div>
+              <div><span>最近心跳</span><strong id="eventHeartbeat">--</strong></div>
+            </div>
+            <div class="event-table-wrap">
+              <table class="event-table">
+                <thead><tr><th>时间</th><th>事件</th><th>模式</th><th>Iq 目标 / 实际 (A)</th><th>Id 目标 / 实际 (A)</th></tr></thead>
+                <tbody id="eventRows"></tbody>
+              </table>
+            </div>
+            <details class="raw-events"><summary>查看原始 JSON</summary><pre id="eventLog" aria-live="polite"></pre></details>
+          </article>
+          <article class="panel console-panel"><div class="panel-title-row"><h2>设备日志</h2><button id="clearLog" type="button" class="icon-button" title="清空日志">清空</button></div><pre id="deviceLog" aria-live="polite"></pre></article>
+          <article class="panel console-panel"><div class="panel-title-row"><h2>手动命令</h2><button id="sendManual" type="button" class="button" disabled>发送</button></div><label class="visually-hidden" for="manualCommand">串口命令</label><input id="manualCommand" type="text" value="show" spellcheck="false" title="发送到 MCU 的文本命令，例如 show 或 mode null"></article>
+        </section>
+      </section>
+    </main>
+    <template id="unsupportedTemplate"><strong>当前浏览器不支持 Web Serial。</strong> 请使用最新版 Microsoft Edge 或 Google Chrome。</template>
+    <script src="app.js"></script>
+  </body>
+</html>

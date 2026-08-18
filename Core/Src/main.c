@@ -116,12 +116,13 @@ int main(void)
   MX_ADC1_Init();
   MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
-set_motor_pid(
-    0.0f, 0.0f, 0.0f, // 位置环暂时关闭
-    0.0f, 0.0f, 0.0f, // 速度环暂时关闭
-    0.2f, 0.0f, 0.0f, // d轴电流环：只有P
-    1.2f, 0.02, 0.0f  // q轴电流环：只有P
-);
+  set_motor_pid(
+      3.5, 0, 7,
+      0.02, 0.001, 0,
+      1.2, 0.02, 0,
+      1.2, 0.02, 0);
+
+      
   extern uint8_t mt6701_rx_data[3];
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET); // 磁编码器mt6701 SPI的片选引脚
   HAL_SPI_TransmitReceive_DMA(&hspi1, mt6701_rx_data, mt6701_rx_data, 3);
@@ -173,13 +174,14 @@ set_motor_pid(
 
     // 调节PID顺序：先调节电流环
     motor_control_context.torque_norm_d = 0.0f;
-    motor_control_context.torque_norm_q = 0.1f;
+    motor_control_context.torque_norm_q = 0.05f;
     motor_control_context.type = control_type_torque;
 
 
   // 理论讲解以及FOC代码逐步实现讲解请前往查看：https://blog.csdn.net/qq570437459/category_12672491.html
   uint32_t vofa_tick = HAL_GetTick();
   uint32_t led_tick = HAL_GetTick();
+  uint32_t event_tick = HAL_GetTick();
   motor_uart_command_start();
   while (1)
   {
@@ -204,6 +206,12 @@ set_motor_pid(
     {
       led_tick = now;
       HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_15);
+    }
+
+    if (now - event_tick >= 1000)
+    {
+      event_tick = now;
+      motor_uart_event_heartbeat();
     }
 
     /* USER CODE END WHILE */

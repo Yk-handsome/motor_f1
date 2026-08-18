@@ -55,3 +55,4 @@ void set_position_pid(float p, float i, float d);
 void set_speed_pid(float p, float i, float d);
 void set_torque_d_pid(float p, float i, float d);
 void set_torque_q_pid(float p, float i, float d);
+void reset_motor_pid_states(void);

@@ -45,6 +45,7 @@ void MX_USART2_UART_Init(void);
 void motor_uart_command_start(void);
 void motor_uart_command_process(void);
 void motor_uart_command_irq_handler(void);
+void motor_uart_event_heartbeat(void);
 
 /* USER CODE END Prototypes */
 

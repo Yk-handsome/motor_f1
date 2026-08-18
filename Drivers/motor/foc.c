@@ -183,6 +183,18 @@ static void set_pid_param(arm_pid_instance_f32 *pid, motor_pid_param_t *param,
         __enable_irq();
 }
 
+void reset_motor_pid_states(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    arm_pid_reset_f32(&pid_position);
+    arm_pid_reset_f32(&pid_speed);
+    arm_pid_reset_f32(&pid_torque_d);
+    arm_pid_reset_f32(&pid_torque_q);
+    if (!primask)
+        __enable_irq();
+}
+
 void set_position_pid(float p, float i, float d)
 {
     set_pid_param(&pid_position, &motor_pid_position, p, i, d);

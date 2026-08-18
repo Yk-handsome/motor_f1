@@ -25,6 +25,7 @@
 /* USER CODE END 0 */
 
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USART2 init function */
 
@@ -83,6 +84,21 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+    /* USART2 RX uses circular DMA so FOC execution cannot drop UART bytes. */
+    hdma_usart2_rx.Instance = DMA1_Channel6;
+    hdma_usart2_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_usart2_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart2_rx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_usart2_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart2_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart2_rx.Init.Mode = DMA_CIRCULAR;
+    hdma_usart2_rx.Init.Priority = DMA_PRIORITY_HIGH;
+    if (HAL_DMA_Init(&hdma_usart2_rx) != HAL_OK)
+    {
+      Error_Handler();
+    }
+    __HAL_LINKDMA(uartHandle, hdmarx, hdma_usart2_rx);
+
   /* USER CODE BEGIN USART2_MspInit 1 */
 
   /* USER CODE END USART2_MspInit 1 */
@@ -105,6 +121,7 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
     PA3     ------> USART2_RX
     */
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_2|GPIO_PIN_3);
+    HAL_DMA_DeInit(uartHandle->hdmarx);
 
   /* USER CODE BEGIN USART2_MspDeInit 1 */
 
@@ -121,17 +138,43 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 #include "global_def.h"
 
 #define MOTOR_COMMAND_BUFFER_SIZE 128
+#define MOTOR_UART_DMA_BUFFER_SIZE 256
 
 static char motor_uart_rx_buffer[MOTOR_COMMAND_BUFFER_SIZE];
+static uint8_t motor_uart_dma_buffer[MOTOR_UART_DMA_BUFFER_SIZE];
 static volatile uint16_t motor_uart_rx_index;
 static volatile uint8_t motor_uart_command_ready;
 static volatile uint32_t motor_uart_last_rx_tick;
+static volatile uint16_t motor_uart_dma_last_pos;
 
+static const char *control_type_name(motor_control_type type);
 static void motor_uart_store_rx_byte(uint8_t byte);
+static void motor_uart_dma_process(void);
+
+static void motor_uart_log_event(const char *event)
+{
+  printf("{\"type\":\"event\",\"event\":\"%s\",\"tick\":%lu,\"mode\":\"%s\",\"iq_ref_a\":%.3f,\"iq_a\":%.3f,\"id_ref_a\":%.3f,\"id_a\":%.3f,\"iq_ref_norm\":%.3f,\"iq_norm\":%.3f,\"id_ref_norm\":%.3f,\"id_norm\":%.3f}\r\n",
+         event,
+         (unsigned long)HAL_GetTick(),
+         control_type_name(motor_control_context.type),
+         motor_target_i_q,
+         motor_i_q,
+         motor_target_i_d,
+         motor_i_d,
+         motor_target_i_q / MAX_CURRENT,
+         motor_i_q / MAX_CURRENT,
+         motor_target_i_d / MAX_CURRENT,
+         motor_i_d / MAX_CURRENT);
+}
+
+void motor_uart_event_heartbeat(void)
+{
+  motor_uart_log_event("heartbeat");
+}
 
 int fputc(int c, FILE *stream)
 {
-  // 直接等待TXE，RX由高优先级USART2中断独立接收
+  // 发送保持阻塞式；接收由 DMA 独立搬运，不会依赖 UART 中断抢占 FOC。
   while (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_TXE) == RESET)
     ;
   huart2.Instance->DR = (uint8_t)c;
@@ -217,6 +260,12 @@ static void execute_motor_command(char *command)
              &value_1, &value_2, &value_3) == 5 &&
       strcmp(group, "pid") == 0)
   {
+    if (motor_control_context.type != control_type_null)
+    {
+      motor_uart_log_event("pid_rejected_busy");
+      printf("# ERR pid busy: use mode null before changing PID\r\n");
+      return;
+    }
     if (strcmp(name, "current") == 0)
     {
       set_torque_d_pid(value_1, value_2, value_3);
@@ -237,6 +286,7 @@ static void execute_motor_command(char *command)
     }
     printf("# OK pid %s %.6f %.6f %.6f\r\n",
            name, value_1, value_2, value_3);
+    motor_uart_log_event("pid_applied");
     return;
   }
 
@@ -258,6 +308,7 @@ static void execute_motor_command(char *command)
         return;
       }
       printf("# OK target %s %.6f\r\n", name, value_1);
+      motor_uart_log_event("target_applied");
       return;
     }
 
@@ -273,6 +324,7 @@ static void execute_motor_command(char *command)
         return;
       }
       printf("# OK limit %s %.6f\r\n", name, value_1);
+      motor_uart_log_event("limit_applied");
       return;
     }
   }
@@ -299,11 +351,21 @@ static void execute_motor_command(char *command)
 
     motor_control_context.type = new_type;
     if (new_type == control_type_null)
+    {
       set_pwm_duty(0.0f, 0.0f, 0.0f);
+      motor_control_context.torque_norm_d = 0.0f;
+      motor_control_context.torque_norm_q = 0.0f;
+      motor_control_context.speed = 0.0f;
+      reset_motor_pid_states();
+      motor_uart_log_event("motor_stopped");
+    }
     printf("# OK mode %s\r\n", control_type_name(new_type));
+    if (new_type != control_type_null)
+      motor_uart_log_event("mode_changed");
     return;
   }
 
+  motor_uart_log_event("command_error");
   printf("# ERR command: %s\r\n", command);
 }
 
@@ -312,19 +374,27 @@ void motor_uart_command_start(void)
   motor_uart_rx_index = 0;
   motor_uart_command_ready = 0;
   motor_uart_last_rx_tick = HAL_GetTick();
+  motor_uart_dma_last_pos = 0;
 
-  // 高于ADC/FOC的优先级1；中断中只读取DR并写入缓冲区
-  HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(USART2_IRQn);
+  // 接收改为循环 DMA，避免 FOC 高优先级执行期间 UART RXNE 溢出丢字节。
+  HAL_NVIC_DisableIRQ(USART2_IRQn);
   __HAL_UART_CLEAR_OREFLAG(&huart2);
-  __HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
-  printf("# UART RX IRQ READY\r\n");
+  if (HAL_UART_Receive_DMA(&huart2, motor_uart_dma_buffer, MOTOR_UART_DMA_BUFFER_SIZE) != HAL_OK)
+  {
+    motor_uart_log_event("uart_dma_error");
+    printf("# UART RX DMA ERROR\r\n");
+    return;
+  }
+  motor_uart_log_event("uart_dma_ready");
+  printf("# UART RX DMA READY\r\n");
 }
 
 void motor_uart_command_process(void)
 {
   char command[MOTOR_COMMAND_BUFFER_SIZE];
   uint32_t primask;
+
+  motor_uart_dma_process();
 
   // 兼容没有附加CR/LF的串口工具：最后一个字节后静默100ms即视为一条完整命令
   if (!motor_uart_command_ready && motor_uart_rx_index > 0 &&
@@ -379,16 +449,21 @@ static void motor_uart_store_rx_byte(uint8_t byte)
     motor_uart_rx_index = 0;
 }
 
+static void motor_uart_dma_process(void)
+{
+  uint16_t dma_pos = MOTOR_UART_DMA_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(huart2.hdmarx);
+
+  while (motor_uart_dma_last_pos != dma_pos)
+  {
+    motor_uart_store_rx_byte(motor_uart_dma_buffer[motor_uart_dma_last_pos]);
+    motor_uart_dma_last_pos++;
+    if (motor_uart_dma_last_pos >= MOTOR_UART_DMA_BUFFER_SIZE)
+      motor_uart_dma_last_pos = 0;
+  }
+}
+
 void motor_uart_command_irq_handler(void)
 {
-  uint32_t status = huart2.Instance->SR;
-
-  // 读取DR会同时清除RXNE以及ORE/NE/FE/PE错误标志
-  if (status & (USART_SR_RXNE | USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE))
-  {
-    uint8_t byte = (uint8_t)(huart2.Instance->DR & 0xFFU);
-    if (status & USART_SR_RXNE)
-      motor_uart_store_rx_byte(byte);
-  }
+  // 保留接口以兼容 stm32f1xx_it.c；USART2 RX 已由 DMA 接管。
 }
 /* USER CODE END 1 */
